@@ -4,11 +4,13 @@ import json
 import logging
 from typing import Optional
 
+from collab_types import T_CollabNSMap
+
 DATA_MAX_AGE = datetime.timedelta(days=1)
 _log = logging.getLogger(__name__)
 
 
-def match_collab(fed_prefix: str, collab_ns_map: dict[str, list[str]]) -> Optional[str]:
+def match_collab(fed_prefix: str, collab_ns_map: T_CollabNSMap) -> Optional[str]:
     """
     Return the collab name whose glob list fnmatch-matches fed_prefix, else None.
 
@@ -33,7 +35,7 @@ def match_collab(fed_prefix: str, collab_ns_map: dict[str, list[str]]) -> Option
 def _read_exports(
     data_path: str,
     exclude_ns_globs: Optional[list[str]],
-    max_age: datetime.timedelta = DATA_MAX_AGE,
+    max_age: datetime.timedelta,
 ) -> dict[str, tuple[Optional[bool], int]]:
     """
     Read exports from a .jsonl file and return a deduplicated dict.
@@ -48,7 +50,7 @@ def _read_exports(
     Parameters
     ----------
     max_age:
-        Maximum age of a "time" entry to still be included. Defaults to DATA_MAX_AGE.
+        Maximum age of a "time" entry to still be included.
     """
     seen: dict[str, tuple[Optional[bool], int]] = {}
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -97,7 +99,7 @@ def print_exports_table(
     data_path: str,
     *,
     si: bool = False,
-    collab_ns_map: Optional[dict[str, list[str]]] = None,
+    collab_ns_map: Optional[T_CollabNSMap] = None,
     exclude_ns_globs: Optional[list[str]] = None,
     title: Optional[str] = None,
     max_age: datetime.timedelta = DATA_MAX_AGE,
@@ -166,7 +168,7 @@ def print_exports_table(
 
 def print_collabs_summary(
     data_paths: list[str],
-    collab_ns_map: dict[str, list[str]],
+    collab_ns_map: T_CollabNSMap,
     *,
     si: bool = False,
     exclude_ns_globs: Optional[list[str]] = None,

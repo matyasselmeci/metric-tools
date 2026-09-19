@@ -16,18 +16,12 @@ import logging
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import Optional
 
+from collab_types import ConfigData, T_Clusters, T_CollabNSMap, T_SubNSMap
 from k8s import check_cluster_access, check_namespace_access, find_pelican_origin_pods
 from output import print_collabs_summary, print_exports_table
 from pelican import get_exports_for_pod
-
-
-class ConfigData(NamedTuple):
-    clusters: list[tuple[str, configparser.SectionProxy]]
-    sub_ns_map: dict[str, list[tuple[str, str]]]
-    collab_ns_map: dict[str, list[str]]
-    exclude_ns_globs: list[str]
 
 
 def parse_args(argv) -> argparse.Namespace:
@@ -98,12 +92,14 @@ def parse_args(argv) -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-exports",
-        action="store_true",
+        dest="print_exports",
+        action="store_false",
         help="Do not print the exports tables",
     )
     parser.add_argument(
         "--no-summary",
-        action="store_true",
+        dest="print_summary",
+        action="store_false",
         help="Do not print the per-collaboration storage summary",
     )
     parser.add_argument(
@@ -144,14 +140,20 @@ def read_config(args: argparse.Namespace) -> ConfigData:
 
     clusters = []
     if run_nautilus and "nautilus" in cfg:
+        if args.nautilus_context:
+            cfg["nautlius"]["context"] = args.nautilus_context
         clusters.append(("nautilus", cfg["nautilus"]))
     if run_tiger and "tiger" in cfg:
+        if args.tiger_context:
+            cfg["tiger"]["context"] = args.tiger_context
         clusters.append(("tiger", cfg["tiger"]))
     if run_tempest and "tempest" in cfg:
+        if args.tempest_context:
+            cfg["tempest"]["context"] = args.tempest_context
         clusters.append(("tempest", cfg["tempest"]))
 
     # Parse [cluster:pod-prefix] sections for sub-namespace mapping
-    sub_ns_map: dict[str, list[tuple[str, str]]] = {}
+    sub_ns_map: T_SubNSMap = {}
     known_clusters = {"nautilus", "tiger", "tempest"}
     for section_name in cfg.sections():
         if ":" not in section_name:
@@ -175,7 +177,7 @@ def read_config(args: argparse.Namespace) -> ConfigData:
         if prefix_pairs:
             sub_ns_map[section_name] = prefix_pairs
 
-    collab_ns_map: dict[str, list[str]] = {}
+    collab_ns_map: T_CollabNSMap = {}
     if "collab_namespaces" in cfg:
         for collab_name, globs_str in cfg["collab_namespaces"].items():
             collab_ns_map[collab_name] = globs_str.split()
@@ -193,8 +195,141 @@ def read_config(args: argparse.Namespace) -> ConfigData:
     )
 
 
+def k8s_pre_flight_check(clusters: T_Clusters) -> bool:
+    """
+    Check if the requested clusters are reachable.
+
+    Parameters
+    ----------
+    clusters:
+        The definitions of the clusters to check, from config.ini.
+
+    Returns
+    -------
+    bool
+        True if the clusters are accessible.
+    """
+    inaccessible_clusters = []
+    for cluster_name, section in clusters:
+        context = section["context"]
+        if not check_cluster_access(cluster_name, context):
+            inaccessible_clusters.append(cluster_name)
+    if inaccessible_clusters:
+        print(
+            "ERROR: cannot access cluster(s): " + ", ".join(inaccessible_clusters),
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def gather_from_clusters(args: argparse.Namespace, config: ConfigData) -> list[str]:
+    out_files = []
+
+    for cluster_name, section in config.clusters:
+        context = section["context"]
+        namespaces = section["namespaces"].split()
+        out_file = section["file"]
+        exclude_globs = section.get("exclude_origins", "").split()
+        cluster_count = 0
+        cluster_skipped = 0
+        cluster_eligible = 0
+        cluster_excluded = 0
+
+        with open(out_file, "a") as fh:
+            for namespace in namespaces:
+                # If -n is specified, stop after the given number of namespaces.
+                if args.n is not None and cluster_count >= args.n:
+                    break
+                cluster_count, cluster_skipped, eligible, excluded = _process_namespace(
+                    cluster_name,
+                    context,
+                    namespace,
+                    fh,
+                    args,
+                    config.sub_ns_map,
+                    cluster_count,
+                    cluster_skipped,
+                    exclude_globs,
+                )
+                cluster_eligible += eligible
+                cluster_excluded += excluded
+
+        if cluster_eligible > 0 and cluster_eligible == cluster_excluded:
+            print(f"All pods for {cluster_name} skipped.", file=sys.stderr)
+
+        out_files.append(out_file)
+
+    # Render after collection so stdout tables cannot be interleaved with stderr progress.
+    if args.verbose:
+        print()
+        print()
+
+    return out_files
+
+
+def print_tables_from_files(
+    input_files: list[str],
+    config: ConfigData,
+    max_age: datetime.timedelta,
+    print_exports: bool,
+    print_summary: bool,
+) -> bool:
+    """
+    Read input files and print all the requested tables.
+
+    Parameters
+    ----------
+    input_flies:
+        A list of input files to read data from.
+    config:
+        The ConfigData object containing various mappings.
+    max_age:
+        Data older than this will be ignored.
+    print_exports:
+        Print the individual exports tables.
+    print_summary:
+        Print the Storage Utilization summary table.
+
+    Returns
+    -------
+    bool
+        True if all input files were read successfully.
+    """
+    all_ok = True
+    stems = Counter(Path(f).stem for f in input_files)
+    for input_file in input_files:
+        if print_exports:
+            stem = Path(input_file).stem
+            table_title = f"{stem.title()} Exports"
+            if stems[stem] > 1:
+                table_title += f" ({input_file})"
+            try:
+                print_exports_table(
+                    input_file,
+                    collab_ns_map=config.collab_ns_map,
+                    exclude_ns_globs=config.exclude_ns_globs,
+                    title=table_title,
+                    max_age=max_age,
+                )
+            except OSError as err:
+                print(f"Error loading {input_file}: {err}", file=sys.stderr)
+                all_ok = False
+            sys.stdout.flush()
+    if print_summary:
+        print_collabs_summary(
+            input_files,
+            config.collab_ns_map,
+            exclude_ns_globs=config.exclude_ns_globs,
+            title="Storage Utilization",
+            max_age=max_age,
+        )
+        sys.stdout.flush()
+    return all_ok
+
+
 def _get_sub_ns_prefixes(
-    sub_ns_map: dict[str, list[tuple[str, str]]],
+    sub_ns_map: T_SubNSMap,
     cluster_name: str,
     pod_name: str,
 ) -> Optional[list[tuple[str, str]]]:
@@ -285,7 +420,7 @@ def _process_namespace(
     namespace: str,
     fh,
     args: argparse.Namespace,
-    sub_ns_map: dict[str, list[tuple[str, str]]],
+    sub_ns_map: T_SubNSMap,
     cluster_count: int,
     cluster_skipped: int,
     exclude_globs: Optional[list[str]] = None,
@@ -334,7 +469,7 @@ def _process_namespace(
             continue
 
         prefix_pairs = _get_sub_ns_prefixes(sub_ns_map, cluster_name, origin.pod_name)
-        if not (prefix_pairs is not None or cluster_name == "nautilus"):
+        if prefix_pairs is None:
             continue
 
         eligible += 1
@@ -357,122 +492,42 @@ def main(argv=None) -> int:
         logging.basicConfig(level=logging.DEBUG)
 
     config = read_config(args)
-    show_table = not args.no_exports
-    show_summary = not args.no_summary
     max_age = datetime.timedelta(days=args.max_age)
 
-    context_overrides = {
-        "nautilus": args.nautilus_context,
-        "tiger": args.tiger_context,
-        "tempest": args.tempest_context,
-    }
-
     if args.input:
-        if not show_table and not show_summary:
+        if not args.print_exports and not args.print_summary:
             print("Nothing to do")
-            return 0
+            return 2
 
-        stems = Counter(Path(f).stem for f in args.input)
-        for input_file in args.input:
-            if show_table:
-                stem = Path(input_file).stem
-                table_title = f"{stem.title()} Exports"
-                if stems[stem] > 1:
-                    table_title += f" ({input_file})"
-                print_exports_table(
-                    input_file,
-                    collab_ns_map=config.collab_ns_map,
-                    exclude_ns_globs=config.exclude_ns_globs,
-                    title=table_title,
-                    max_age=max_age,
-                )
-                sys.stdout.flush()
-        if show_summary:
-            print_collabs_summary(
-                args.input,
-                config.collab_ns_map,
-                exclude_ns_globs=config.exclude_ns_globs,
-                title="Storage Utilization",
-                max_age=max_age,
-            )
-            sys.stdout.flush()
+        #
+        # Input files mode
+        # Read existing data from input files only.
+        #
+        table_files = args.input
+
+    else:
+
+        #
+        # Gather mode
+        # Enter pods in clusters to gather statistics.
+        #
+
+        if not k8s_pre_flight_check(config.clusters):
+            return 1
+
+        table_files = gather_from_clusters(args, config)
+
+    if print_tables_from_files(
+        table_files, config, max_age, args.print_exports, args.print_summary
+    ):
         return 0
-
-    inaccessible_clusters = []
-    for cluster_name, section in config.clusters:
-        context = context_overrides.get(cluster_name) or section["context"]
-        if not check_cluster_access(cluster_name, context):
-            inaccessible_clusters.append(cluster_name)
-    if inaccessible_clusters:
-        print(
-            "ERROR: cannot access cluster(s): " + ", ".join(inaccessible_clusters),
-            file=sys.stderr,
-        )
+    else:
         return 1
-
-    out_files = []
-    for cluster_name, section in config.clusters:
-        context = section["context"]
-        if context_overrides.get(cluster_name):
-            context = context_overrides[cluster_name]
-        namespaces = section["namespaces"].split()
-        out_file = section["file"]
-        exclude_globs = section.get("exclude_origins", "").split()
-        cluster_count = 0
-        cluster_skipped = 0
-        cluster_eligible = 0
-        cluster_excluded = 0
-
-        with open(out_file, "a") as fh:
-            for namespace in namespaces:
-                if args.n is not None and cluster_count >= args.n:
-                    break
-                cluster_count, cluster_skipped, eligible, excluded = _process_namespace(
-                    cluster_name,
-                    context,
-                    namespace,
-                    fh,
-                    args,
-                    config.sub_ns_map,
-                    cluster_count,
-                    cluster_skipped,
-                    exclude_globs,
-                )
-                cluster_eligible += eligible
-                cluster_excluded += excluded
-
-        if cluster_eligible > 0 and cluster_eligible == cluster_excluded:
-            print(f"All pods for {cluster_name} skipped.", file=sys.stderr)
-
-        out_files.append(out_file)
-
-    # Render after collection so stdout tables cannot be interleaved with stderr progress.
-    if args.verbose:
-        print()
-        print()
-    if show_table:
-        for cluster_name, section in config.clusters:
-            print_exports_table(
-                section["file"],
-                collab_ns_map=config.collab_ns_map,
-                exclude_ns_globs=config.exclude_ns_globs,
-                title=f"{cluster_name.capitalize()} Exports",
-                max_age=max_age,
-            )
-            sys.stdout.flush()
-
-    if show_summary:
-        print_collabs_summary(
-            out_files,
-            config.collab_ns_map,
-            exclude_ns_globs=config.exclude_ns_globs,
-            title="Storage Utilization",
-            max_age=max_age,
-        )
-        sys.stdout.flush()
 
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    ret = main()
+    sys.stdout.flush()
+    sys.exit(ret)

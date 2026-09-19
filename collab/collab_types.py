@@ -1,5 +1,6 @@
+from configparser import SectionProxy
 from dataclasses import dataclass
-from typing import Optional
+from typing import NamedTuple, Optional
 
 
 @dataclass
@@ -32,3 +33,15 @@ class Error(Exception):
 
 class InnerScriptError(Error):
     """Something went wrong with the inner script executed inside the container"""
+
+
+T_Clusters = list[tuple[str, SectionProxy]]
+T_CollabNSMap = dict[str, list[str]]
+T_SubNSMap = dict[str, list[tuple[str, str]]]
+
+
+class ConfigData(NamedTuple):
+    clusters: T_Clusters
+    collab_ns_map: T_CollabNSMap
+    exclude_ns_globs: list[str]
+    sub_ns_map: T_SubNSMap
