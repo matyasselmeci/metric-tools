@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 """
-storage_metrics.py
+storage_metrics
 
-Outer-script functions (requires: Python 3.9, kubectl available on PATH).
-Finds pods containing Pelican Origin containers in a given Kubernetes namespace,
-then locates the Pelican Server binary inside each such container.
+Collect and print Pelican Origin storage metrics gathered from
+Kubernetes clusters via finding origin pods, execing into them,
+and getting disk usage stats.  It supports the Nautilus, Tiger,
+and Tempest clusters.
+
+Requires `kubectl` to access the clusters.  Optionally, requires
+the AWS CLI to query disk usage of S3 origins.  Your kubeconfig
+must already have settings for the clusters you want to query, in
+a separate context for each cluster.  The default context names are
+"nautilus", "tiger", and "tempest", but that can be changed with the
+--{nautilus,tiger,tempest}-context arguments.
+
+Data usage is aggregated by federation prefix and then mapped to
+collaborations based on globs in the "config.ini" file.  The collected
+data is saved in JSONL files in an output/ directory and can be reused
+in later runs via the --input argument, though by default input older
+than 1 day is ignored.
 """
 
 import argparse
@@ -27,7 +41,8 @@ from pelican import get_exports_for_pod
 def parse_args(argv) -> argparse.Namespace:
     """Parse and validate CLI arguments."""
     parser = argparse.ArgumentParser(
-        description="Collect Pelican Origin storage metrics from Kubernetes clusters."
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--nautilus", action="store_true", help="Only process the nautilus cluster"
