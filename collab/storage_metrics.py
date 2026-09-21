@@ -162,7 +162,7 @@ def read_config(args: argparse.Namespace) -> ConfigData:
     clusters = []
     if run_nautilus and "nautilus" in cfg:
         if args.nautilus_context:
-            cfg["nautlius"]["context"] = args.nautilus_context
+            cfg["nautilus"]["context"] = args.nautilus_context
         clusters.append(("nautilus", cfg["nautilus"]))
     if run_tiger and "tiger" in cfg:
         if args.tiger_context:
