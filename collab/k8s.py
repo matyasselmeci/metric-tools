@@ -375,11 +375,18 @@ def find_pelican_origin_deployments(
         # Origins).
         ready_replicas = deployment.get("status", {}).get("readyReplicas", 0)
         if ready_replicas < 1:
-            print(
-                f"Origin {deployment_name!r}: not ready (readyReplicas={ready_replicas!r})",
-                file=sys.stderr,
-                flush=True,
+            containers = (
+                deployment.get("spec", {})
+                .get("template", {})
+                .get("spec", {})
+                .get("containers", [])
             )
+            if any(is_origin_container(container) for container in containers):
+                print(
+                    f"Origin {deployment_name!r}: not ready (readyReplicas={ready_replicas!r})",
+                    file=sys.stderr,
+                    flush=True,
+                )
             continue
 
         info = examine_deployment(deployment, context, namespace)

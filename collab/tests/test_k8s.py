@@ -246,6 +246,37 @@ def test_find_pelican_origin_deployments_excludes_before_readiness_warning(
     mock_resolve.assert_not_called()
 
 
+@patch("k8s._resolve_pod_for_deployment")
+@patch("k8s.run")
+def test_find_pelican_origin_deployments_does_not_warn_for_non_origin(
+    mock_run, mock_resolve, capsys
+):
+    deployment_non_origin = {
+        "metadata": {"name": "non-origin"},
+        "spec": {
+            "template": {
+                "spec": {"containers": [{"name": "c1", "image": "nginx:latest"}]}
+            }
+        },
+        "status": {"readyReplicas": 0},
+    }
+    mock_run.return_value = MagicMock(
+        stdout=json.dumps({"items": [deployment_non_origin]})
+    )
+
+    assert (
+        list(
+            find_pelican_origin_deployments(
+                context="my-context",
+                namespace="my-ns",
+            )
+        )
+        == []
+    )
+    assert "not ready" not in capsys.readouterr().err
+    mock_resolve.assert_not_called()
+
+
 @patch("k8s.run")
 def test_namespace_for_context(mock_run):
     # Active context with * marker should parse correctly
