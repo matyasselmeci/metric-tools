@@ -5,16 +5,22 @@ from typing import NamedTuple, Optional
 
 @dataclass
 class Origin:
-    """Information about how to exec into an origin container."""
+    """
+    Information about how to exec into an origin container.
+
+    Origins are discovered at the Deployment level (see k8s.py), but
+    `kubectl cp` requires a concrete pod name and repeated `kubectl exec
+    deploy/NAME` calls aren't guaranteed to land on the same pod. So
+    *pod_name* is a single real pod resolved from the Deployment (via its
+    label selector) once at discovery time, and reused for every cp/exec
+    call against this Origin to guarantee they hit the same pod.
+    """
 
     namespace: str
     pod_name: str
     container_name: str
     context: str
-
-    @property
-    def deployment(self) -> str:
-        return "-".join(self.pod_name.split("-")[:-2])
+    deployment_name: str
 
 
 @dataclass

@@ -5,9 +5,10 @@ Script for getting the Collaboration Storage Utilization numbers for the
 monthly reports.
 
 This queries the Kubernetes clusters we can kubectl to (nautilus, tempest,
-tiger), detecting pelican origins (based on image name), exec'ing into
-them to collect the amount of storage used by each export in the
-federation, then grouping them by collaboration into a table that shows:
+tiger), detecting pelican origin Deployments (based on the pod template's
+image name), exec'ing into a pod resolved from each Deployment to collect
+the amount of storage used by each export in the federation, then grouping
+them by collaboration into a table that shows:
 
 * the collaboration name
 * the amount of authenticated data
@@ -35,7 +36,8 @@ Usage
    argument.)
 
 2. Obtain credentials for Nautilus, Tempest, and Tiger.  Make sure you
-   can `get pods` and `exec` in the namespaces that have origins in them.
+   can `get deployments`, `get pods`, and `exec` in the namespaces that have
+   origins in them.
 
 3. Run `./storage_metrics.py`
 
@@ -53,7 +55,7 @@ Configuration
 `config.ini` defines:
 
 * Which Kubernetes namespaces to look at.
-* Which origins (based on pod names) to ignore.
+* Which origins (based on Deployment names) to ignore.
 * Which Pelican namespaces (federation prefixes) to ignore.
 * The mapping between federation prefixes and collaborations.
 

@@ -130,7 +130,7 @@ def test_read_config_exclude_namespaces(tmp_path, monkeypatch):
 
 
 @patch("storage_metrics.get_exports_for_pod")
-@patch("storage_metrics.find_pelican_origin_pods")
+@patch("storage_metrics.find_pelican_origin_deployments")
 @patch("storage_metrics.check_namespace_access")
 def test_process_namespace_verbose(
     mock_access, mock_find, mock_exports, tmp_path, capsys
@@ -138,9 +138,10 @@ def test_process_namespace_verbose(
     mock_access.return_value = True
     origin = Origin(
         namespace="ns",
-        pod_name="collab-shared-osdf-pelican-origin-abc",
+        pod_name="collab-shared-osdf-pelican-origin-abc-7f9c9b6d84-xyz12",
         container_name="c",
         context="ctx",
+        deployment_name="collab-shared-osdf-pelican-origin-abc",
     )
     mock_find.return_value = [origin]
     mock_exports.return_value = ("site1", [], "2023-01-01T00:00:00Z")
@@ -437,7 +438,7 @@ def test_main_cluster_title(
 
 
 @patch("storage_metrics.get_exports_for_pod")
-@patch("storage_metrics.find_pelican_origin_pods")
+@patch("storage_metrics.find_pelican_origin_deployments")
 @patch("storage_metrics.check_namespace_access")
 def test_process_namespace_exclude(mock_access, mock_find, mock_exports, tmp_path):
     mock_access.return_value = True
@@ -445,12 +446,17 @@ def test_process_namespace_exclude(mock_access, mock_find, mock_exports, tmp_pat
 
     origin_excl = Origin(
         namespace="ns",
-        pod_name="nsdf-origin-abc-def",
+        pod_name="nsdf-origin-abc-def-p1",
         container_name="c",
         context="ctx",
+        deployment_name="nsdf-origin-abc-def",
     )
     origin_kept = Origin(
-        namespace="ns", pod_name="my-origin-abc-def", container_name="c", context="ctx"
+        namespace="ns",
+        pod_name="my-origin-abc-def-p1",
+        container_name="c",
+        context="ctx",
+        deployment_name="my-origin-abc-def",
     )
     mock_find.return_value = [origin_excl, origin_kept]
 
@@ -512,6 +518,7 @@ def test_process_origin_adds_date(tmp_path):
         pod_name="dep-abc-123",
         container_name="c",
         context="ctx",
+        deployment_name="dep",
     )
     args = argparse.Namespace(verbose=False)
     out_file = tmp_path / "out.jsonl"
@@ -542,6 +549,7 @@ def test_process_origin_adds_date_on_failure(tmp_path):
         pod_name="dep-abc-123",
         container_name="c",
         context="ctx",
+        deployment_name="dep",
     )
     args = argparse.Namespace(verbose=False)
     out_file = tmp_path / "out.jsonl"

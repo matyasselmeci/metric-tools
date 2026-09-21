@@ -3,7 +3,8 @@
 storage_metrics
 
 Collect and print Pelican Origin storage metrics gathered from
-Kubernetes clusters via finding origin pods, execing into them,
+Kubernetes clusters via finding origin Deployments, execing into a pod
+resolved from each,
 and getting disk usage stats.  It supports the Nautilus, Tiger,
 and Tempest clusters.
 
@@ -33,7 +34,11 @@ from pathlib import Path
 from typing import Optional
 
 from collab_types import ConfigData, T_Clusters, T_CollabNSMap, T_SubNSMap
-from k8s import check_cluster_access, check_namespace_access, find_pelican_origin_pods
+from k8s import (
+    check_cluster_access,
+    check_namespace_access,
+    find_pelican_origin_deployments,
+)
 from output import print_collabs_summary, print_exports_table
 from pelican import get_exports_for_pod
 
@@ -91,7 +96,8 @@ def parse_args(argv) -> argparse.Namespace:
         action="append",
         default=[],
         metavar="PREFIX",
-        help="Only process pods whose name starts with PREFIX (may be given multiple times)",
+        help="Only process origins whose Deployment name starts with PREFIX "
+        "(may be given multiple times)",
     )
     parser.add_argument(
         "-q",
@@ -346,23 +352,23 @@ def print_tables_from_files(
 def _get_sub_ns_prefixes(
     sub_ns_map: T_SubNSMap,
     cluster_name: str,
-    pod_name: str,
+    deployment_name: str,
 ) -> Optional[list[tuple[str, str]]]:
     """
-    Find prefix pairs for a pod from the sub-namespace map.
+    Find prefix pairs for an origin from the sub-namespace map.
 
     Iterates through sub_ns_map for keys starting with "cluster_name:".
-    Returns the prefix list for the first key where pod_name.startswith(pod_prefix).
-    Returns None if no match.
+    Returns the prefix list for the first key where
+    deployment_name.startswith(deployment_prefix). Returns None if no match.
 
     Parameters
     ----------
     sub_ns_map:
-        Dict mapping "CLUSTER:POD_PREFIX" to lists of (storage_prefix, federation_prefix) tuples.
+        Dict mapping "CLUSTER:DEPLOYMENT_PREFIX" to lists of (storage_prefix, federation_prefix) tuples.
     cluster_name:
         The cluster name to search for.
-    pod_name:
-        The pod name to match against pod_prefix.
+    deployment_name:
+        The Deployment name to match against deployment_prefix.
 
     Returns
     -------
@@ -373,8 +379,8 @@ def _get_sub_ns_prefixes(
     for key in sub_ns_map:
         if not key.startswith(prefix):
             continue
-        pod_prefix = key[len(prefix) :]
-        if pod_name.startswith(pod_prefix):
+        deployment_prefix = key[len(prefix) :]
+        if deployment_name.startswith(deployment_prefix):
             return sub_ns_map[key]
     return None
 
@@ -394,7 +400,7 @@ def _process_origin(
     try:
         if args.verbose:
             print(
-                f"[{cluster_name}] {origin.pod_name}: Getting exports...",
+                f"[{cluster_name}] {origin.deployment_name}: Getting exports...",
                 file=sys.stderr,
                 flush=True,
             )
@@ -405,12 +411,12 @@ def _process_origin(
         else:
             sitename, exports, time_str = get_exports_for_pod(origin)
     except Exception as err:
-        print(f"ERROR: {origin.pod_name}: {err}", file=sys.stderr)
+        print(f"ERROR: {origin.deployment_name}: {err}", file=sys.stderr)
         ok = False
 
     if args.verbose:
         print(
-            f"[{cluster_name}] {origin.pod_name}: {'ok' if ok else 'FAIL'}",
+            f"[{cluster_name}] {origin.deployment_name}: {'ok' if ok else 'FAIL'}",
             file=sys.stderr,
             flush=True,
         )
@@ -420,7 +426,7 @@ def _process_origin(
             {
                 "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "sitename": sitename,
-                "origin": origin.deployment,
+                "origin": origin.deployment_name,
                 "exports": exports,
             }
         )
@@ -441,14 +447,14 @@ def _process_namespace(
     exclude_globs: Optional[list[str]] = None,
 ) -> tuple[int, int, int, int]:
     """
-    Process all origins in one namespace: check access, list pods, apply filters,
-    collect exports, and append results to *fh*.
+    Process all origins in one namespace: check access, list Deployments,
+    apply filters, collect exports, and append results to *fh*.
 
     Returns
     -------
     tuple[int, int, int, int]
         Updated ``(cluster_count, cluster_skipped, eligible, excluded)`` where
-        *eligible* is the number of pods that would have been processed and
+        *eligible* is the number of origins that would have been processed and
         *excluded* is how many of those were silently skipped by *exclude_globs*.
     """
     if exclude_globs is None:
@@ -458,10 +464,12 @@ def _process_namespace(
         return cluster_count, cluster_skipped, 0, 0
 
     try:
-        origins = list(find_pelican_origin_pods(context=context, namespace=namespace))
+        origins = list(
+            find_pelican_origin_deployments(context=context, namespace=namespace)
+        )
     except Exception as err:
         print(
-            f"ERROR: failed to list pods in cluster={cluster_name!r} "
+            f"ERROR: failed to list deployments in cluster={cluster_name!r} "
             f"namespace={namespace!r}: {err}",
             file=sys.stderr,
         )
@@ -475,7 +483,7 @@ def _process_namespace(
             break
 
         explicitly_selected = bool(args.pod) and any(
-            origin.pod_name.startswith(p) for p in args.pod
+            origin.deployment_name.startswith(p) for p in args.pod
         )
         if args.pod and not explicitly_selected:
             continue
@@ -483,14 +491,16 @@ def _process_namespace(
             cluster_skipped += 1
             continue
 
-        prefix_pairs = _get_sub_ns_prefixes(sub_ns_map, cluster_name, origin.pod_name)
+        prefix_pairs = _get_sub_ns_prefixes(
+            sub_ns_map, cluster_name, origin.deployment_name
+        )
         if prefix_pairs is None:
             continue
 
         eligible += 1
 
         if not explicitly_selected and any(
-            fnmatch.fnmatch(origin.deployment, g) for g in exclude_globs
+            fnmatch.fnmatch(origin.deployment_name, g) for g in exclude_globs
         ):
             excluded += 1
             continue

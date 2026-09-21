@@ -9,7 +9,13 @@ from pelican import get_exports_for_pod
 @patch("pelican.run_inner_script")
 @patch("pelican.copy_inner_script_to_origin")
 def test_get_exports_for_pod(mock_copy, mock_run_inner):
-    origin = Origin(namespace="ns", pod_name="pod", container_name="c", context="ctx")
+    origin = Origin(
+        namespace="ns",
+        pod_name="pod",
+        container_name="c",
+        context="ctx",
+        deployment_name="dep",
+    )
 
     # POSIX storage type should extract posix.exports
     mock_run_inner.return_value = {

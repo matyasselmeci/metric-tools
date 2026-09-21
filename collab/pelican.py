@@ -236,7 +236,7 @@ def get_exports_for_pod(
         exports = handle_s3_exports(result['s3'])
     else:
         print(
-            f"WARNING: {origin.pod_name}: unknown or unsupported storage type {storagetype!r}, skipping exports",
+            f"WARNING: {origin.deployment_name}: unknown or unsupported storage type {storagetype!r}, skipping exports",
             file=sys.stderr,
         )
         exports = []

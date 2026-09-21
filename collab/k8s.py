@@ -35,10 +35,22 @@ def run_in_origin(
 
 def check_namespace_access(cluster: str, context: str, namespace: str) -> bool:
     """
-    Return True if we have permission to get pods and exec into pods in *namespace*.
-    Prints an error to stderr and returns False if either check fails.
+    Return True if we have permission to get deployments, get pods, and exec
+    into pods in *namespace*. Prints an error to stderr and returns False if
+    any check fails.
     """
     checks = [
+        [
+            "kubectl",
+            "--context",
+            context,
+            "auth",
+            "can-i",
+            "get",
+            "deployments",
+            "--namespace",
+            namespace,
+        ],
         [
             "kubectl",
             "--context",
@@ -79,10 +91,11 @@ def check_cluster_access(cluster: str, context: str) -> bool:
     """
     Return True if the current credentials can access the cluster context.
 
-    Both permissions are checked even when the first one fails so callers can
+    All permissions are checked even when an earlier one fails so callers can
     report the complete access status before starting data collection.
     """
     checks = [
+        ["kubectl", "--context", context, "auth", "can-i", "get", "deployments"],
         ["kubectl", "--context", context, "auth", "can-i", "get", "pods"],
         [
             "kubectl",
@@ -151,23 +164,90 @@ def is_origin_container(container: dict) -> bool:
         return False
 
 
-def examine_pod(
-    pod: dict,
+def _resolve_pod_for_deployment(
+    context: str,
+    namespace: str,
+    deployment: dict,
+) -> Optional[str]:
+    """
+    Resolve one real, Running pod name that belongs to *deployment*, using the
+    Deployment's ``spec.selector.matchLabels`` as a label selector.
+
+    We can't use ``kubectl exec deploy/NAME`` for the whole workflow because
+    ``kubectl cp`` requires a concrete pod name, and separate ``kubectl exec
+    deploy/NAME`` invocations aren't guaranteed to land on the same pod. So we
+    resolve a single pod once here and reuse it for every cp/exec call for
+    this Origin.
+
+    Only ``matchLabels`` selectors are supported (``matchExpressions`` are
+    ignored); this matches the label conventions used by these Deployments'
+    labels.
+
+    Returns
+    -------
+    str | None
+        The name of a Running pod matching the Deployment's selector, or None
+        if the selector can't be determined or no Running pod matches.
+    """
+    match_labels: dict = deployment.get("spec", {}).get("selector", {}).get(
+        "matchLabels", {}
+    )
+    if not match_labels:
+        return None
+
+    selector = ",".join(f"{k}={v}" for k, v in match_labels.items())
+    result = run(
+        [
+            "kubectl",
+            "--context",
+            context,
+            "get",
+            "pods",
+            "--namespace",
+            namespace,
+            "--selector",
+            selector,
+            "--field-selector",
+            "status.phase=Running",
+            "--output",
+            "json",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+
+    try:
+        pod_list: dict = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    pods: list[dict] = pod_list.get("items", [])
+    pod_names = sorted(
+        p["metadata"]["name"] for p in pods if p.get("metadata", {}).get("name")
+    )
+    return pod_names[0] if pod_names else None
+
+
+def examine_deployment(
+    deployment: dict,
     context: Optional[str] = None,
     namespace: Optional[str] = None,
 ) -> Optional[Origin]:
     """
-    Examine a single pod manifest (as returned by the Kubernetes API / kubectl)
-    and determine whether it hosts a Pelican Origin container.
+    Examine a single Deployment manifest (as returned by the Kubernetes API /
+    kubectl) and determine whether its pod template hosts a Pelican Origin
+    container.
 
-    If it does, return a :class:`Origin`.  Returns *None* if the pod does not
-    contain a recognised Pelican Origin container.
+    If it does, resolve one real Running pod belonging to the Deployment (see
+    :func:`_resolve_pod_for_deployment`) and return an :class:`Origin`.
+    Returns *None* if the Deployment does not contain a recognised Pelican
+    Origin container, or if no Running pod could be resolved for it.
 
     Parameters
     ----------
-    pod:
-        A dict representing the pod's JSON manifest (e.g. from
-        ``kubectl get pod <n> -o json``).
+    deployment:
+        A dict representing the Deployment's JSON manifest (e.g. from
+        ``kubectl get deployment <n> -o json``).
     context:
         The Kubernetes context.  Defaults to the current context.
     namespace:
@@ -184,8 +264,8 @@ def examine_pod(
         namespace = namespace_for_context(context)
 
     try:
-        pod_name: str = pod["metadata"]["name"]
-        containers: list[dict] = pod["spec"]["containers"]
+        deployment_name: str = deployment["metadata"]["name"]
+        containers: list[dict] = deployment["spec"]["template"]["spec"]["containers"]
     except KeyError:
         return None
 
@@ -195,24 +275,41 @@ def examine_pod(
 
         container_name: str = container["name"]
 
+        pod_name = _resolve_pod_for_deployment(context, namespace, deployment)
+        if pod_name is None:
+            print(
+                f"Origin {deployment_name!r}: could not resolve a Running pod",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+
         return Origin(
             namespace=namespace,
             pod_name=pod_name,
             container_name=container_name,
             context=context,
+            deployment_name=deployment_name,
         )
 
     return None
 
 
-def find_pelican_origin_pods(
+def find_pelican_origin_deployments(
     context: Optional[str] = None,
     namespace: Optional[str] = None,
 ) -> Generator[Origin]:
     """
-    List all pods in *namespace* and return information about every pod that
-    contains a Pelican Origin container with a discoverable Pelican Server
-    binary.
+    List all Deployments in *namespace* and return information about every
+    Deployment whose pod template contains a Pelican Origin container with a
+    discoverable Pelican Server binary.
+
+    Discovery works at the Deployment level rather than the pod level: for
+    each qualifying, ready Deployment, one real pod is resolved (via the
+    Deployment's label selector) and used for all subsequent cp/exec calls.
+    This mirrors letting Kubernetes "pick" a pod from the Deployment, while
+    guaranteeing the pod used for the inner-script copy step and the pod used
+    to run it are the same.
 
     Parameters
     ----------
@@ -225,16 +322,16 @@ def find_pelican_origin_pods(
     Yields
     ------
     Origin
-        The info about one pod: the namespace, name, container name, and path
-        to pelican-server binary inside the container.
+        The info about one Deployment: the namespace, a resolved pod name,
+        container name, and the Deployment name.
 
     Raises
     ------
     Error
         If the context or namespace cannot be determined.
     subprocess.CalledProcessError
-        If the initial ``kubectl get pods`` call fails (e.g. bad namespace,
-        missing credentials).
+        If the initial ``kubectl get deployments`` call fails (e.g. bad
+        namespace, missing credentials).
     json.JSONDecodeError
         If kubectl returns unexpected output.
     """
@@ -249,7 +346,7 @@ def find_pelican_origin_pods(
             "--context",
             context,
             "get",
-            "pods",
+            "deployments",
             "--namespace",
             namespace,
             "--output",
@@ -257,22 +354,27 @@ def find_pelican_origin_pods(
         ]
     )
 
-    pod_list: dict = json.loads(result.stdout)
-    pods: list[dict] = pod_list.get("items", [])
+    deployment_list: dict = json.loads(result.stdout)
+    deployments: list[dict] = deployment_list.get("items", [])
 
-    for pod in pods:
-        pod_name = pod.get("metadata", {}).get("name", "<unknown>")
-        info = examine_pod(pod, context, namespace)
+    for deployment in deployments:
+        deployment_name = deployment.get("metadata", {}).get("name", "<unknown>")
+        # A Deployment with 0 ready replicas has no pod we could exec into,
+        # so skip it before even trying to resolve a pod (avoids a
+        # 'could not resolve a Running pod' false alarm for scaled-down
+        # Origins).
+        ready_replicas = deployment.get("status", {}).get("readyReplicas", 0)
+        if ready_replicas < 1:
+            print(
+                f"Origin {deployment_name!r}: not ready (readyReplicas={ready_replicas!r})",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+
+        info = examine_deployment(deployment, context, namespace)
         if info is not None:
-            phase = pod.get("status", {}).get("phase", "<unknown>")
-            if phase == "Running":
-                yield info
-            else:
-                print(
-                    f"Origin {pod_name!r}: not Running (phase={phase!r})",
-                    file=sys.stderr,
-                    flush=True,
-                )
+            yield info
 
 
 def interactive_exec(origin: Origin, cmd=("bash",)) -> int:
