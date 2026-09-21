@@ -494,7 +494,8 @@ def _process_namespace(
         prefix_pairs = _get_sub_ns_prefixes(
             sub_ns_map, cluster_name, origin.deployment_name
         )
-        if prefix_pairs is None:
+        if prefix_pairs is None and cluster_name != "nautilus":
+            # HACK: Nautilus has no subnamespaces
             continue
 
         eligible += 1
