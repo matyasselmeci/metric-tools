@@ -1,3 +1,4 @@
+import fnmatch
 import json
 import re
 import subprocess
@@ -189,8 +190,8 @@ def _resolve_pod_for_deployment(
         The name of a Running pod matching the Deployment's selector, or None
         if the selector can't be determined or no Running pod matches.
     """
-    match_labels: dict = deployment.get("spec", {}).get("selector", {}).get(
-        "matchLabels", {}
+    match_labels: dict = (
+        deployment.get("spec", {}).get("selector", {}).get("matchLabels", {})
     )
     if not match_labels:
         return None
@@ -298,6 +299,7 @@ def examine_deployment(
 def find_pelican_origin_deployments(
     context: Optional[str] = None,
     namespace: Optional[str] = None,
+    exclude_origins: Optional[list[str]] = None,
 ) -> Generator[Origin]:
     """
     List all Deployments in *namespace* and return information about every
@@ -318,6 +320,9 @@ def find_pelican_origin_deployments(
     namespace:
         The Kubernetes namespace to search.  Defaults to the namespace
         configured for *context*.
+    exclude_origins:
+        Glob patterns for Deployment names that should be ignored before
+        readiness warnings or pod resolution.
 
     Yields
     ------
@@ -359,6 +364,11 @@ def find_pelican_origin_deployments(
 
     for deployment in deployments:
         deployment_name = deployment.get("metadata", {}).get("name", "<unknown>")
+        if exclude_origins and any(
+            fnmatch.fnmatch(deployment_name, pattern) for pattern in exclude_origins
+        ):
+            continue
+
         # A Deployment with 0 ready replicas has no pod we could exec into,
         # so skip it before even trying to resolve a pod (avoids a
         # 'could not resolve a Running pod' false alarm for scaled-down

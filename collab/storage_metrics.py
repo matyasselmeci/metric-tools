@@ -465,7 +465,11 @@ def _process_namespace(
 
     try:
         origins = list(
-            find_pelican_origin_deployments(context=context, namespace=namespace)
+            find_pelican_origin_deployments(
+                context=context,
+                namespace=namespace,
+                exclude_origins=exclude_globs,
+            )
         )
     except Exception as err:
         print(
