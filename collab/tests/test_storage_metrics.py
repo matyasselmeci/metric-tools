@@ -19,8 +19,8 @@ def test_parse_args():
     # Default flags
     args = parse_args([])
     assert args.verbose is True
-    assert args.no_exports is False
-    assert args.no_summary is False
+    assert args.print_exports is True
+    assert args.print_summary is True
     assert args.input == []
     assert args.nautilus is False
     assert args.tiger is False
@@ -39,8 +39,8 @@ def test_parse_args():
 
     # New flags
     args = parse_args(["--no-exports", "--no-summary"])
-    assert args.no_exports is True
-    assert args.no_summary is True
+    assert args.print_exports is False
+    assert args.print_summary is False
 
     # -s and --pod together should raise parser error (mutually exclusive)
     with pytest.raises(SystemExit):
@@ -386,7 +386,7 @@ def test_main_nothing_to_do(mock_table, mock_summary, tmp_path, monkeypatch, cap
     f.write_text("")
 
     # -i with both --no flags: "Nothing to do"
-    assert main(["-i", str(f), "--no-exports", "--no-summary"]) == 0
+    assert main(["-i", str(f), "--no-exports", "--no-summary"]) == 2
     assert "Nothing to do" in capsys.readouterr().out
     mock_table.assert_not_called()
     mock_summary.assert_not_called()
@@ -442,7 +442,7 @@ def test_main_cluster_title(
 @patch("storage_metrics.check_namespace_access")
 def test_process_namespace_exclude(mock_access, mock_find, mock_exports, tmp_path):
     mock_access.return_value = True
-    mock_exports.return_value = ("site1", [])
+    mock_exports.return_value = ("site1", [], "2023-01-01T00:00:00Z")
 
     origin_excl = Origin(
         namespace="ns",
@@ -463,10 +463,10 @@ def test_process_namespace_exclude(mock_access, mock_find, mock_exports, tmp_pat
     args = argparse.Namespace(n=None, s=0, pod=[], verbose=False)
     out_file = tmp_path / "out.jsonl"
 
-    # nsdf-origin matches the glob; my-origin does not
+    # nsdf-origin* matches the glob; my-origin* does not
     with open(out_file, "w") as fh:
         count, _, eligible, excluded = _process_namespace(
-            "nautilus", "ctx", "ns", fh, args, {}, 0, 0, exclude_globs=["nsdf-origin"]
+            "nautilus", "ctx", "ns", fh, args, {}, 0, 0, exclude_globs=["nsdf-origin*"]
         )
     assert eligible == 2
     assert excluded == 1
@@ -478,7 +478,7 @@ def test_process_namespace_exclude(mock_access, mock_find, mock_exports, tmp_pat
     args_p = argparse.Namespace(n=None, s=0, pod=["nsdf-origin"], verbose=False)
     with open(out_file, "w") as fh:
         count, _, eligible, excluded = _process_namespace(
-            "nautilus", "ctx", "ns", fh, args_p, {}, 0, 0, exclude_globs=["nsdf-origin"]
+            "nautilus", "ctx", "ns", fh, args_p, {}, 0, 0, exclude_globs=["nsdf-origin*"]
         )
     assert excluded == 0
     assert count == 1
